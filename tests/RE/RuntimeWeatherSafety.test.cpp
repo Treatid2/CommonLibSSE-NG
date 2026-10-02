@@ -2,27 +2,72 @@
 
 #include "RE/I/Inventory3DManager.h"
 #include "RE/R/RaceSexMenu.h"
-#include "RE/S/Sky.h"
+#include "RE/S/SkyPrecipitation.h"
 #include "RE/T/TESWeather.h"
 #include "REL/REL.h"
 #include "SKSE/Version.h"
 
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
 namespace
 {
-	template <class T>
-	struct EngineStorage
+	struct RuntimeMarker
 	{
-		alignas(T) std::array<std::byte, sizeof(T)> bytes{};
-		T* get() { return reinterpret_cast<T*>(bytes.data()); }
+		std::uint32_t value{ 0x12345678 };
 	};
 
+	template <std::size_t Offset>
+	struct MenuHost
+	{
+		std::array<std::byte, Offset> prefix{};
+		RuntimeMarker                 payload;
+
+		SE_ONLY_POINTER_ACCESSOR(RuntimeMarker, GetRuntimeData, RE::RaceSexMenu::FLAT_RUNTIME_DATA_OFFSET);
+		VR_ONLY_POINTER_ACCESSOR(RuntimeMarker, GetVRRuntimeData, RE::RaceSexMenu::VR_RUNTIME_DATA_OFFSET);
+	};
+
+	template <std::size_t Offset, class Payload = RuntimeMarker>
+	struct InventoryHost
+	{
+		std::array<std::byte, Offset> prefix{};
+		Payload                       payload;
+
+		SE_ONLY_POINTER_ACCESSOR(Payload, GetRuntimeData,
+			REL::Module::IsAtLeast(SKSE::RUNTIME_SSE_1_6_629) ?
+				RE::Inventory3DManager::UPDATED_FLAT_RUNTIME_DATA_OFFSET :
+				RE::Inventory3DManager::FLAT_RUNTIME_DATA_OFFSET);
+		VR_ONLY_POINTER_ACCESSOR(Payload, GetVRRuntimeData, RE::Inventory3DManager::VR_RUNTIME_DATA_OFFSET);
+	};
+
+	template <class Host>
+	void CheckRuntimeViews(Host& a_host, bool a_vr)
+	{
+		if (a_vr) {
+			CHECK(a_host.GetRuntimeData() == nullptr);
+			CHECK(std::as_const(a_host).GetRuntimeData() == nullptr);
+			CHECK(a_host.GetVRRuntimeData() == &a_host.payload);
+			CHECK(std::as_const(a_host).GetVRRuntimeData() == &a_host.payload);
+		} else {
+			CHECK(a_host.GetVRRuntimeData() == nullptr);
+			CHECK(std::as_const(a_host).GetVRRuntimeData() == nullptr);
+			CHECK(a_host.GetRuntimeData() == &a_host.payload);
+			CHECK(std::as_const(a_host).GetRuntimeData() == &a_host.payload);
+		}
+	}
+
+	template <class Host, class Flat, class VR>
+	constexpr bool PointerViewSignatures =
+		std::is_same_v<decltype(std::declval<Host&>().GetRuntimeData()), Flat*> &&
+		std::is_same_v<decltype(std::declval<const Host&>().GetRuntimeData()), const Flat*> &&
+		std::is_same_v<decltype(std::declval<Host&>().GetVRRuntimeData()), VR*> &&
+		std::is_same_v<decltype(std::declval<const Host&>().GetVRRuntimeData()), const VR*>&& noexcept(std::declval<Host&>().GetRuntimeData())&& noexcept(std::declval<const Host&>().GetRuntimeData())&& noexcept(std::declval<Host&>().GetVRRuntimeData())&& noexcept(std::declval<const Host&>().GetVRRuntimeData());
+
+	static_assert(PointerViewSignatures<RE::RaceSexMenu, RE::RaceSexMenu::RUNTIME_DATA, RE::RaceSexMenu::VR_RUNTIME_DATA>);
+	static_assert(PointerViewSignatures<RE::Inventory3DManager, RE::Inventory3DManager::RUNTIME_DATA, RE::Inventory3DManager::VR_RUNTIME_DATA>);
 	static_assert(std::is_unsigned_v<decltype(RE::TESWeather::Data::transDelta)>);
 	static_assert(std::is_unsigned_v<decltype(RE::TESWeather::Data::sunGlare)>);
 	static_assert(std::is_unsigned_v<decltype(RE::TESWeather::Data::sunDamage)>);
@@ -47,31 +92,28 @@ namespace
 
 TEST_CASE("Weather/All stored precipitation bytes and strict transition boundaries", "[unit][weather-safety]")
 {
-	EngineStorage<RE::Sky>        skyStorage;
-	EngineStorage<RE::TESWeather> weatherStorage;
-	auto*                         sky = skyStorage.get();
-	auto*                         weather = weatherStorage.get();
-	CHECK_FALSE(sky->IsRaining());
-	CHECK_FALSE(sky->IsSnowing());
+	RE::TESWeather::Data weather{};
+	using Flag = RE::TESWeather::WeatherDataFlag;
+	CHECK_FALSE(RE::detail::HasPrecipitation(nullptr, nullptr, Flag::kRainy, 0.5F));
+	CHECK_FALSE(RE::detail::HasPrecipitation(nullptr, nullptr, Flag::kSnow, 0.5F));
 	for (auto flag : { RE::TESWeather::WeatherDataFlag::kRainy, RE::TESWeather::WeatherDataFlag::kSnow }) {
-		weather->data.flags = flag;
+		weather.flags = flag;
 		for (unsigned value = 0; value <= 255; ++value) {
 			const auto byte = static_cast<std::uint8_t>(value);
-			weather->data.precipitationBeginFadeIn = byte;
-			weather->data.precipitationEndFadeOut = byte;
+			weather.precipitationBeginFadeIn = byte;
+			weather.precipitationEndFadeOut = byte;
 			const auto threshold = static_cast<float>(value) / 255.0F;
 			for (float progress : { 0.0F, 0.25F, 0.5F, 0.75F, 1.0F,
 					 threshold, std::nextafter(threshold, -1.0F), std::nextafter(threshold, 2.0F) }) {
 				CAPTURE(value, progress);
-				sky->currentWeatherPct = progress;
-				sky->currentWeather = weather;
-				sky->lastWeather = nullptr;
-				CHECK(sky->IsRaining() == (progress > threshold && flag == RE::TESWeather::WeatherDataFlag::kRainy));
-				CHECK(sky->IsSnowing() == (progress > threshold && flag == RE::TESWeather::WeatherDataFlag::kSnow));
-				sky->currentWeather = nullptr;
-				sky->lastWeather = weather;
-				CHECK(sky->IsRaining() == (progress < threshold && flag == RE::TESWeather::WeatherDataFlag::kRainy));
-				CHECK(sky->IsSnowing() == (progress < threshold && flag == RE::TESWeather::WeatherDataFlag::kSnow));
+				CHECK(RE::detail::HasPrecipitation(&weather, nullptr, Flag::kRainy, progress) ==
+					  (progress > threshold && flag == Flag::kRainy));
+				CHECK(RE::detail::HasPrecipitation(&weather, nullptr, Flag::kSnow, progress) ==
+					  (progress > threshold && flag == Flag::kSnow));
+				CHECK(RE::detail::HasPrecipitation(nullptr, &weather, Flag::kRainy, progress) ==
+					  (progress < threshold && flag == Flag::kRainy));
+				CHECK(RE::detail::HasPrecipitation(nullptr, &weather, Flag::kSnow, progress) ==
+					  (progress < threshold && flag == Flag::kSnow));
 			}
 		}
 	}
@@ -79,31 +121,23 @@ TEST_CASE("Weather/All stored precipitation bytes and strict transition boundari
 
 TEST_CASE("Weather/Mixed transition flags and direct byte round trips", "[unit][weather-safety]")
 {
-	EngineStorage<RE::Sky>        skyStorage;
-	EngineStorage<RE::TESWeather> currentStorage;
-	EngineStorage<RE::TESWeather> previousStorage;
-	auto*                         sky = skyStorage.get();
-	auto*                         current = currentStorage.get();
-	auto*                         previous = previousStorage.get();
-	sky->currentWeather = current;
-	sky->lastWeather = previous;
-	current->data.flags = RE::TESWeather::WeatherDataFlag::kSnow;
-	previous->data.flags = RE::TESWeather::WeatherDataFlag::kRainy;
-	current->data.precipitationBeginFadeIn = 64;
-	previous->data.precipitationEndFadeOut = 192;
-	sky->currentWeatherPct = 64.0F / 255.0F;
-	CHECK(sky->IsRaining());
-	CHECK_FALSE(sky->IsSnowing());
-	sky->currentWeatherPct = 0.5F;
-	CHECK(sky->IsRaining());
-	CHECK(sky->IsSnowing());
-	sky->currentWeatherPct = 192.0F / 255.0F;
-	CHECK_FALSE(sky->IsRaining());
-	CHECK(sky->IsSnowing());
-	current->data.flags = RE::TESWeather::WeatherDataFlag::kPleasant;
-	previous->data.flags = RE::TESWeather::WeatherDataFlag::kCloudy;
-	CHECK_FALSE(sky->IsRaining());
-	CHECK_FALSE(sky->IsSnowing());
+	RE::TESWeather::Data current{};
+	RE::TESWeather::Data previous{};
+	using Flag = RE::TESWeather::WeatherDataFlag;
+	current.flags = Flag::kSnow;
+	previous.flags = Flag::kRainy;
+	current.precipitationBeginFadeIn = 64;
+	previous.precipitationEndFadeOut = 192;
+	CHECK(RE::detail::HasPrecipitation(&current, &previous, Flag::kRainy, 64.0F / 255.0F));
+	CHECK_FALSE(RE::detail::HasPrecipitation(&current, &previous, Flag::kSnow, 64.0F / 255.0F));
+	CHECK(RE::detail::HasPrecipitation(&current, &previous, Flag::kRainy, 0.5F));
+	CHECK(RE::detail::HasPrecipitation(&current, &previous, Flag::kSnow, 0.5F));
+	CHECK_FALSE(RE::detail::HasPrecipitation(&current, &previous, Flag::kRainy, 192.0F / 255.0F));
+	CHECK(RE::detail::HasPrecipitation(&current, &previous, Flag::kSnow, 192.0F / 255.0F));
+	current.flags = Flag::kPleasant;
+	previous.flags = Flag::kCloudy;
+	CHECK_FALSE(RE::detail::HasPrecipitation(&current, &previous, Flag::kRainy, 0.5F));
+	CHECK_FALSE(RE::detail::HasPrecipitation(&current, &previous, Flag::kSnow, 0.5F));
 	constexpr std::array fields{
 		&RE::TESWeather::Data::transDelta, &RE::TESWeather::Data::sunGlare,
 		&RE::TESWeather::Data::sunDamage, &RE::TESWeather::Data::precipitationBeginFadeIn,
@@ -114,9 +148,9 @@ TEST_CASE("Weather/Mixed transition flags and direct byte round trips", "[unit][
 	};
 	for (const auto field : fields) {
 		for (unsigned value = 0; value <= 255; ++value) {
-			current->data.*field = static_cast<std::uint8_t>(value);
-			CHECK(static_cast<unsigned>(current->data.*field) == value);
-			const auto normalized = static_cast<float>(current->data.*field) / 255.0F;
+			current.*field = static_cast<std::uint8_t>(value);
+			CHECK(static_cast<unsigned>(current.*field) == value);
+			const auto normalized = static_cast<float>(current.*field) / 255.0F;
 			CHECK(normalized >= 0.0F);
 			CHECK(normalized <= 1.0F);
 		}
@@ -141,34 +175,38 @@ TEST_CASE("Menus/Runtime view rejection and native inventory prefix", "[unit][we
 	};
 	for (const auto& [version, runtime, inventoryOffset] : cases) {
 		REQUIRE(REL::Module::mock(version, runtime, L"RuntimeWeatherSafety.exe", 0x1000));
-		const SKSE::stl::scope_exit              reset{ [] { REL::Module::reset(); } };
-		alignas(16) std::array<std::byte, 0x800> storage{};
-		auto*                                    menu = reinterpret_cast<RE::RaceSexMenu*>(storage.data());
-		auto*                                    inventory = reinterpret_cast<RE::Inventory3DManager*>(storage.data());
+		const SKSE::stl::scope_exit reset{ [] { REL::Module::reset(); } };
 		if (REL::Module::IsVR()) {
-			CHECK(menu->GetRuntimeData() == nullptr);
-			CHECK(std::as_const(*menu).GetRuntimeData() == nullptr);
-			REQUIRE(menu->GetVRRuntimeData());
-			CHECK(reinterpret_cast<std::byte*>(&menu->GetVRRuntimeData()->sex) == storage.data() + 0x150);
-			CHECK(reinterpret_cast<const std::byte*>(&std::as_const(*menu).GetVRRuntimeData()->sliderData) == storage.data() + 0xF8);
-			CHECK(inventory->GetRuntimeData() == nullptr);
-			CHECK(std::as_const(*inventory).GetRuntimeData() == nullptr);
-			REQUIRE(inventory->GetVRRuntimeData());
-			CHECK(reinterpret_cast<std::byte*>(inventory->GetVRRuntimeData()) == storage.data() + 0x58);
-			CHECK(reinterpret_cast<const std::byte*>(std::as_const(*inventory).GetVRRuntimeData()) == storage.data() + 0x58);
-			const std::uint32_t count = 2;
-			std::memcpy(storage.data() + 0x258, &count, sizeof(count));
-			CHECK(inventory->GetVRRuntimeData()->loadedModels.size() == count);
+			using Menu = MenuHost<RE::RaceSexMenu::VR_RUNTIME_DATA_OFFSET>;
+			using Inventory = InventoryHost<RE::Inventory3DManager::VR_RUNTIME_DATA_OFFSET,
+				RE::Inventory3DManager::VR_RUNTIME_DATA>;
+			static_assert(offsetof(Menu, payload) == 0x50);
+			static_assert(offsetof(Inventory, payload) == 0x58);
+			Menu      menu;
+			Inventory inventory;
+			CheckRuntimeViews(menu, true);
+			CheckRuntimeViews(inventory, true);
+			CHECK(inventory.payload.loadedModels.empty());
+			CHECK(inventory.payload.loadedModels.size() == 0);
+			const auto* countBase = static_cast<const RE::BSTArrayBase*>(&inventory.payload.loadedModels);
+			CHECK(reinterpret_cast<const std::byte*>(countBase) ==
+				  reinterpret_cast<const std::byte*>(&inventory) + 0x258);
 		} else {
-			CHECK(menu->GetVRRuntimeData() == nullptr);
-			CHECK(std::as_const(*menu).GetVRRuntimeData() == nullptr);
-			CHECK(inventory->GetVRRuntimeData() == nullptr);
-			CHECK(std::as_const(*inventory).GetVRRuntimeData() == nullptr);
-			REQUIRE(menu->GetRuntimeData());
-			CHECK(reinterpret_cast<std::byte*>(&menu->GetRuntimeData()->sliderData) == storage.data() + 0x140);
-			CHECK(reinterpret_cast<const std::byte*>(&std::as_const(*menu).GetRuntimeData()->sex) == storage.data() + 0x198);
-			CHECK(reinterpret_cast<std::byte*>(inventory->GetRuntimeData()) == storage.data() + inventoryOffset);
-			CHECK(reinterpret_cast<const std::byte*>(std::as_const(*inventory).GetRuntimeData()) == storage.data() + inventoryOffset);
+			using Menu = MenuHost<RE::RaceSexMenu::FLAT_RUNTIME_DATA_OFFSET>;
+			using OldInventory = InventoryHost<RE::Inventory3DManager::FLAT_RUNTIME_DATA_OFFSET>;
+			using NewInventory = InventoryHost<RE::Inventory3DManager::UPDATED_FLAT_RUNTIME_DATA_OFFSET>;
+			static_assert(offsetof(Menu, payload) == 0x40);
+			static_assert(offsetof(OldInventory, payload) == 0x58);
+			static_assert(offsetof(NewInventory, payload) == 0x60);
+			Menu menu;
+			CheckRuntimeViews(menu, false);
+			if (inventoryOffset == 0x60) {
+				NewInventory inventory;
+				CheckRuntimeViews(inventory, false);
+			} else {
+				OldInventory inventory;
+				CheckRuntimeViews(inventory, false);
+			}
 		}
 	}
 }

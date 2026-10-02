@@ -89,9 +89,13 @@ namespace RE
 		};
 		static_assert(sizeof(RUNTIME_DATA) == 0x108);
 
+		inline static constexpr std::size_t FLAT_RUNTIME_DATA_OFFSET = 0x58;
+		inline static constexpr std::size_t UPDATED_FLAT_RUNTIME_DATA_OFFSET = 0x60;
+		inline static constexpr std::size_t VR_RUNTIME_DATA_OFFSET = 0x58;
+
 		/// Returns the flat preview layout, or nullptr in VR.
 		SE_ONLY_POINTER_ACCESSOR(RUNTIME_DATA, GetRuntimeData,
-			REL::Module::IsAtLeast(SKSE::RUNTIME_SSE_1_6_629) ? 0x60 : 0x58);
+			REL::Module::IsAtLeast(SKSE::RUNTIME_SSE_1_6_629) ? UPDATED_FLAT_RUNTIME_DATA_OFFSET : FLAT_RUNTIME_DATA_OFFSET);
 		// Only the independently confirmed array prefix is modeled here. The
 		// flat RUNTIME_DATA is not a valid view of VR's preview models: its size
 		// field lands inside a VR entry instead of at manager +0x258.
@@ -101,7 +105,7 @@ namespace RE
 		};
 		static_assert(sizeof(VR_RUNTIME_DATA) == 0x208);
 		/// Returns the confirmed VR array prefix, or nullptr in SE/AE.
-		VR_ONLY_POINTER_ACCESSOR(VR_RUNTIME_DATA, GetVRRuntimeData, 0x58);
+		VR_ONLY_POINTER_ACCESSOR(VR_RUNTIME_DATA, GetVRRuntimeData, VR_RUNTIME_DATA_OFFSET);
 		// members
 		std::uint8_t           unk011;              // 011
 		std::uint16_t          unk012;              // 012

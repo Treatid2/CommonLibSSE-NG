@@ -96,10 +96,13 @@ namespace RE
 		RUNTIME_CAST_ACCESSOR(MenuEventHandler, AsMenuEventHandler, 0x30, 0x40);
 #endif
 
+		inline static constexpr std::size_t FLAT_RUNTIME_DATA_OFFSET = 0x40;
+		inline static constexpr std::size_t VR_RUNTIME_DATA_OFFSET = 0x50;
+
 		/// Returns the flat menu layout, or nullptr in VR.
-		SE_ONLY_POINTER_ACCESSOR(RUNTIME_DATA, GetRuntimeData, 0x40);
+		SE_ONLY_POINTER_ACCESSOR(RUNTIME_DATA, GetRuntimeData, FLAT_RUNTIME_DATA_OFFSET);
 		/// Returns the menu layout without an embedded camera, or nullptr in SE/AE.
-		VR_ONLY_POINTER_ACCESSOR(VR_RUNTIME_DATA, GetVRRuntimeData, 0x50);
+		VR_ONLY_POINTER_ACCESSOR(VR_RUNTIME_DATA, GetVRRuntimeData, VR_RUNTIME_DATA_OFFSET);
 		void ChangeName(const char* a_name);
 
 		// members

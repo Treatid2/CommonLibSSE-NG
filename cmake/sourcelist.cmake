@@ -1782,6 +1782,7 @@ set(SOURCES
 	include/RE/S/Sky.h
 	include/RE/S/SkyEffectController.h
 	include/RE/S/SkyObject.h
+	include/RE/S/SkyPrecipitation.h
 	include/RE/S/SkyrimScriptObjectBindPolicy.h
 	include/RE/S/SkyrimScriptStore.h
 	include/RE/S/SkyrimVM.h

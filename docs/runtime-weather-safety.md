@@ -20,9 +20,20 @@ and use arrow access. These are source API changes; they do not change the
 engine layouts. The VR menu omits the flat camera, and the inventory accessor
 exposes only the independently confirmed VR array prefix.
 
-The registered unit source covers every stored precipitation byte, strict
-and adjacent float boundaries, mixed weather, unsigned direct-field round
-trips, const/mutable runtime rejection and native offsets. Compilation across
+The registered unit source calls the production precipitation helper with
+constructed `TESWeather::Data` values. It covers every stored precipitation
+byte, strict and adjacent float boundaries, mixed weather and unsigned
+direct-field round trips without constructing engine-owned Sky or weather
+objects. Sky delegates to that helper with its nullable current/previous data.
+
+Accessor tests construct lightweight hosts with live payload members and use
+the production pointer-accessor macros and declared runtime offsets. They
+check mutable/const runtime rejection and address selection. A constructed,
+empty VR inventory prefix checks the array's count-base offset without game
+allocation. Static assertions retain engine layout and accessor signatures;
+these fixtures do not instantiate or call methods on engine-owned menu objects.
+
+Compilation across
 SE, AE, VR, FLATRIM and ALL, native assertion execution, CSX compilation and
 live-engine qualification are separate validation gates. Source assertions
-and mocked views do not prove fixed-slot dispatch in a running engine.
+and mocked runtime selection do not prove fixed-slot dispatch in a running engine.
